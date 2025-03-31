@@ -45,7 +45,7 @@ install_deps() {
 
 # 运行配置向导
 run_wizard() {
-  bash <(curl -sL https://raw.githubusercontent.com/yourusername/musicbot/main/setup_wizard.sh)
+  bash <(curl -sL https://raw.githubusercontent.com/jfeng018/musicbot/refs/heads/main/setup_wizard.sh)
 }
 
 # 部署核心组件
