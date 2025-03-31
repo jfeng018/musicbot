@@ -1,12 +1,13 @@
 [Unit]
 Description=Music Auto-Import Bot
-After=network.target
+After=network-online.target
+Requires=network-online.target
 
 [Service]
 User=musicbot
-EnvironmentFile=/musicbot/.env
-ExecStart=/bin/bash /musicbot/musicbot.sh
-ExecStart=/bin/bash/musicbot/musicbot.sh
+EnvironmentFile=/opt/musicbot/.env
+Type=simple
+ExecStart=/bin/bash /opt/musicbot/musicbot.sh
 Restart=always
 RestartSec=30
 StandardOutput=append:/var/log/musicbot/processor.log
