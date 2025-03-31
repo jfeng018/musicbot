@@ -5,6 +5,7 @@ After=network.target
 [Service]
 User=musicbot
 EnvironmentFile=/musicbot/.env
+ExecStart=/bin/bash /musicbot/musicbot.sh
 ExecStart=/bin/bash/musicbot/musicbot.sh
 Restart=always
 RestartSec=30
