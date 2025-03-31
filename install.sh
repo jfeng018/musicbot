@@ -128,10 +128,10 @@ while true; do
   show_menu
   read choice
   case $choice in
-    1) install; break ;;
-    2) update; break ;;
-    3) uninstall; break ;;
+    1) install ;;
+    2) update ;;
+    3) uninstall ;;
     4) exit 0 ;;
-    *) echo -e "${RED}无效选择！${NC}"; sleep 1 ;;
+    *) echo -e "${RED}无效选择!${NC}"; sleep 1 ;;
   esac
 done
