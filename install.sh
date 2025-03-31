@@ -45,7 +45,7 @@ install_deps() {
 
 # 运行配置向导
 run_wizard() {
-  bash <(curl -sL https://raw.githubusercontent.com/jfeng018/musicbot/refs/heads/main/setup_wizard.sh)
+  bash <(curl -sL https://raw.githubusercontent.com/jfeng018/musicbot/main/setup_wizard.sh)
 }
 
 # 部署核心组件
@@ -56,18 +56,18 @@ deploy_components() {
   # 下载核心脚本
   declare -a scripts=("musicbot.sh" "activity_check.sh" "cleanup_logs.sh")
   for script in "${scripts[@]}"; do
-    curl -sL "https://raw.githubusercontent.com/yourusername/musicbot/main/$script" \
+    curl -sL "https://raw.githubusercontent.com/jfeng018/musicbot/main/$script" \
       -o "$INSTALL_DIR/scripts/$script"
     chmod +x "$INSTALL_DIR/scripts/$script"
   done
 
   # 配置Systemd服务
-  curl -sL "https://raw.githubusercontent.com/yourusername/musicbot/main/musicbot.service" \
+  curl -sL "https://raw.githubusercontent.com/jfeng018/musicbot/main/musicbot.service" \
     -o "/etc/systemd/system/musicbot.service"
 
   # 配置Beets
   mkdir -p /etc/beets
-  curl -sL "https://raw.githubusercontent.com/yourusername/musicbot/main/config.yaml" \
+  curl -sL "https://raw.githubusercontent.com/jfeng018/musicbot/main/config.yaml" \
     -o "/etc/beets/config.yaml"
 
   # 创建音乐目录

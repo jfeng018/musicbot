@@ -1,0 +1,31 @@
+directory: /music/{albumartist}/$albumtype/{album} ($year)/{disc}-{track} {title}.$ext
+
+plugins:
+  - fetchart
+  - embedart
+  - fromfilename
+  - duplicates
+  - check
+
+paths:
+  default: $albumartist/$albumtype/{album} ($year)/%if{$multidisc,CD$disc/}$track - $title
+  comp: Various Artists/{album} ($year)/$track - $artist - $title
+  singleton: Singles/$artist - $title
+
+import:
+  copy: yes
+  write: yes
+  autotag: yes
+  log: /var/log/musicbot/beets.log
+  incremental: no
+  group_albums: yes
+
+albumtype:
+  Live: if "'live' in album.lower()"
+
+item_fields:
+  albumartist: albumartist if albumartist else artist
+  multidisc: 1 if disctotal > 1 else 0
+
+ftintitle:
+  format: (feat. {feat})
