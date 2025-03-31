@@ -1,123 +1,176 @@
-#!/bin/bash
+#!/usr/bin/env python3
+import os
+import re
+import hashlib
+import json
+import argparse
+from pathlib import Path
+from mutagen import File
+from mutagen.easyid3 import EasyID3
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+import requests
+import subprocess
 
-set -e
+# 配置管理类
+class ConfigManager:
+    def __init__(self):
+        self.config_path = Path.home() / ".music_organizer.conf"
+        self.config = {}
 
-# 支持的音频格式
-SUPPORTED_FORMATS=("mp3" "flac" "wav" "aac" "ogg" "m4a")
+    def load_config(self):
+        if self.config_path.exists():
+            with open(self.config_path, 'r') as f:
+                self.config = json.load(f)
 
-# 配置文件路径
-CONFIG_FILE="$HOME/.music_organizer_config"
+    def save_config(self):
+        with open(self.config_path, 'w') as f:
+            json.dump(self.config, f, indent=2)
 
-# 读取或设置参数
-read_config() {
-    if [ -f "$CONFIG_FILE" ]; then
-        source "$CONFIG_FILE"
-    fi
+    def get_param(self, key, prompt, is_secret=False):
+        if key in self.config and input(f"{key}已存在，是否重新配置？(y/n) ").lower() != 'y':
+            return self.config[key]
 
-    read -p "请输入 Telegram Bot Token (留空使用历史配置): " INPUT_BOT_TOKEN
-    TELEGRAM_BOT_TOKEN=${INPUT_BOT_TOKEN:-$TELEGRAM_BOT_TOKEN}
+        value = input(prompt)
+        if is_secret:
+            value = value.strip()
+        self.config[key] = value
+        self.save_config()
+        return value
 
-    read -p "请输入 Telegram Chat ID (留空使用历史配置): " INPUT_CHAT_ID
-    TELEGRAM_CHAT_ID=${INPUT_CHAT_ID:-$TELEGRAM_CHAT_ID}
+# 音乐处理核心类
+class MusicProcessor:
+    def __init__(self, config):
+        self.config = config
+        self.processed_files = set()
 
-    read -p "请输入 Navidrome API 地址 (留空使用历史配置): " INPUT_NAVIDROME_API
-    NAVIDROME_API=${INPUT_NAVIDROME_API:-$NAVIDROME_API}
+    def _get_audio_quality(self, filepath):
+        try:
+            result = subprocess.check_output(
+                f"ffprobe -v error -show_entries format=bit_rate -of default=noprint_wrappers=1:nokey=1 {filepath}",
+                shell=True)
+            return int(result.decode().strip())
+        except Exception as e:
+            print(f"获取音质失败: {str(e)}")
+            return 0
 
-    # 保存配置
-    cat <<EOF > "$CONFIG_FILE"
-TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN"
-TELEGRAM_CHAT_ID="$TELEGRAM_CHAT_ID"
-NAVIDROME_API="$NAVIDROME_API"
-EOF
-}
+    def _sanitize_path(self, text):
+        return re.sub(r'[\\/*?:"<>|]', "_", text).strip()
 
-# 发送 Telegram 消息
-send_telegram() {
-    local message="$1"
-    curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
-        -d "chat_id=$TELEGRAM_CHAT_ID&text=$message" >/dev/null
-}
+    def process_file(self, src_path):
+        if src_path in self.processed_files:
+            return False
 
-# 从 MusicBrainz 获取元数据
-fetch_metadata() {
-    local title="$1"
-    local artist="$2"
+        try:
+            audio = File(src_path, easy=True)
+            if not audio:
+                raise ValueError("不支持的文件格式")
 
-    response=$(curl -s "https://musicbrainz.org/ws/2/recording/?query=recording:$title AND artist:$artist&fmt=json")
-    new_title=$(echo "$response" | jq -r '.recordings[0].title')
-    new_artist=$(echo "$response" | jq -r '.recordings[0].artist-credit[0].name')
-    new_album=$(echo "$response" | jq -r '.recordings[0].releases[0].title')
+            # 元数据提取
+            meta = {
+                'artist': audio.get('artist', ['Unknown Artist'])[0].split(';')[0].strip(),
+                'album': audio.get('album', ['Unknown Album'])[0].strip(),
+                'title': audio.get('title', [Path(src_path).stem])[0].strip(),
+                'tracknumber': str(audio.get('tracknumber', ['0'])[0]).zfill(2),
+                'bitrate': self._get_audio_quality(src_path)
+            }
 
-    echo "$new_title|$new_artist|$new_album"
-}
+            # 路径构造
+            dest_dir = Path(self.config['music_dir']) / self._sanitize_path(meta['artist'])
+            dest_dir /= self._sanitize_path(meta['album'])
+            dest_path = dest_dir / f"{meta['tracknumber']} - {self._sanitize_path(meta['title'])}{Path(src_path).suffix}"
 
-# 提取音频元数据
-extract_metadata() {
-    local file="$1"
+            # 判重逻辑
+            existing_files = [f for f in dest_dir.glob(f"*{Path(src_path).suffix}")
+                            if f.stem.startswith(meta['tracknumber'])]
+            if existing_files:
+                existing_bitrate = max(self._get_audio_quality(f) for f in existing_files)
+                if meta['bitrate'] <= existing_bitrate:
+                    print(f"低质量重复: {dest_path}")
+                    return False
 
-    title=$(ffprobe -v quiet -print_format json -show_format "$file" | jq -r .format.tags.title)
-    artist=$(ffprobe -v quiet -print_format json -show_format "$file" | jq -r .format.tags.artist)
-    album=$(ffprobe -v quiet -print_format json -show_format "$file" | jq -r .format.tags.album)
-    bitrate=$(ffprobe -v quiet -print_format json -show_format "$file" | jq -r .format.bit_rate)
-    duration=$(ffprobe -v quiet -print_format json -show_format "$file" | jq -r .format.duration)
+            # 移动文件
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            os.rename(src_path, dest_path)
+            self.processed_files.add(src_path)
+            return True
 
-    # 处理未知元数据
-    [ -z "$title" ] && title=$(basename "$file" | sed 's/ - .*//')
-    [ -z "$artist" ] && artist="Unknown Artist"
-    [ -z "$album" ] && album="Unknown Album"
+        except Exception as e:
+            print(f"处理失败: {str(e)}")
+            return False
 
-    # 尝试从 MusicBrainz 补充元数据
-    fetched_metadata=$(fetch_metadata "$title" "$artist")
-    IFS="|" read -r new_title new_artist new_album <<< "$fetched_metadata"
+# Telegram通知类
+class TelegramNotifier:
+    def __init__(self, token, chat_id):
+        self.base_url = f"https://api.telegram.org/bot{token}/sendMessage"
+        self.chat_id = chat_id
 
-    [ "$new_title" != "null" ] && title="$new_title"
-    [ "$new_artist" != "null" ] && artist="$new_artist"
-    [ "$new_album" != "null" ] && album="$new_album"
+    def send(self, message):
+        params = {
+            'chat_id': self.chat_id,
+            'text': message,
+            'parse_mode': 'HTML'
+        }
+        requests.post(self.base_url, params=params)
 
-    echo "$title|$artist|$album|$bitrate|$duration"
-}
+# 监控处理类
+class MusicHandler(FileSystemEventHandler):
+    def __init__(self, processor, notifier):
+        self.processor = processor
+        self.notifier = notifier
 
-# 更新音频文件的 ID3 标签
-update_metadata() {
-    local file="$1"
-    local title="$2"
-    local artist="$3"
-    local album="$4"
+    def on_created(self, event):
+        if not event.is_directory and event.src_path.endswith(('.mp3', '.flac', '.wav')):
+            success = self.processor.process_file(event.src_path)
+            if success:
+                self.trigger_navidrome_scan()
+                self.send_notification(event.src_path)
 
-    case "${file##*.}" in
-        mp3)
-            eyeD3 --title="$title" --artist="$artist" --album="$album" "$file" >/dev/null
-            ;;
-        flac)
-            metaflac --set-tag="TITLE=$title" --set-tag="ARTIST=$artist" --set-tag="ALBUM=$album" "$file"
-            ;;
-        *)
-            ffmpeg -i "$file" -metadata title="$title" -metadata artist="$artist" -metadata album="$album" -codec copy "${file}.tmp"
-            mv "${file}.tmp" "$file"
-            ;;
-    esac
-}
+    def trigger_navidrome_scan(self):
+        try:
+            requests.post(
+                f"http://localhost:{self.processor.config['navidrome_port']}/api/scan",
+                headers={'X-ND-Auth': self.processor.config['navidrome_token']}
+            )
+        except Exception as e:
+            print(f"扫描触发失败: {str(e)}")
 
-# 监听目录
-watch_directory() {
-    inotifywait -m -e close_write --format "%w%f" "/root/SaveAny/downloads/upMusic" | while read file; do
-        metadata=$(extract_metadata "$file")
-        IFS="|" read -r title artist album bitrate duration <<< "$metadata"
+    def send_notification(self, filename):
+        message = f"🎵 新歌曲已整理:\n<code>{Path(filename).name}</code>"
+        self.notifier.send(message)
 
-        # 移动到目标路径
-        target_dir="/root/SaveAny/downloads/music/$artist/$album"
-        mkdir -p "$target_dir"
-        mv "$file" "$target_dir/$title.${file##*.}"
+if __name__ == "__main__":
+    config = ConfigManager()
+    config.load_config()
 
-        # 更新元数据
-        update_metadata "$target_dir/$title.${file##*.}" "$title" "$artist" "$album"
+    required_params = [
+        ('telegram_token', '请输入Telegram Bot Token: ', True),
+        ('telegram_chat_id', '请输入Telegram Chat ID: ', True),
+        ('navidrome_port', 'Navidrome端口（默认4533）: ', False),
+        ('navidrome_token', 'Navidrome API Token: ', True),
+        ('watch_dir', '监控目录（默认/root/SaveAny/downloads/upMusic）: ', False),
+        ('music_dir', '目标目录（默认/root/SaveAny/downloads/music）: ', False)
+    ]
 
-        # 触发 Navidrome 扫描
-        curl -s "$NAVIDROME_API/api/v1/rescan" >/dev/null
-        send_telegram "✅ 添加新歌曲: $title ($album) 🎵"
-    done
-}
+    param_values = {}
+    for param in required_params:
+        key, prompt, is_secret = param
+        param_values[key] = config.get_param(key, prompt, is_secret)
 
-# 执行
-read_config
-watch_directory
+    # 初始化组件
+    notifier = TelegramNotifier(param_values['telegram_token'], param_values['telegram_chat_id'])
+    processor = MusicProcessor(param_values)
+    event_handler = MusicHandler(processor, notifier)
+
+    # 启动监控
+    observer = Observer()
+    observer.schedule(event_handler, param_values['watch_dir'], recursive=False)
+    observer.start()
+    print(f"开始监控目录: {param_values['watch_dir']}")
+
+    try:
+        while True:
+            pass
+    except KeyboardInterrupt:
+        observer.stop()
+    observer.join()
